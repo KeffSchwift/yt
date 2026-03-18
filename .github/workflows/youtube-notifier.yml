@@ -1,0 +1,71 @@
+name: Notificador de Subidas a YouTube
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Se ejecuta cada 15 minutos
+  workflow_dispatch:         # Permite activación manual desde la pestaña Actions
+
+jobs:
+  check-and-notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # Necesario para guardar el ID del último video en el repo
+
+    steps:
+      - name: Descargar código del repositorio
+        uses: actions/checkout@v4
+
+      - name: Verificar nuevo video y notificar a Discord
+        env:
+          CHANNEL_ID: UC_FoORt0Dc3AZLGu4PlfwQg
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          # Obtener el feed RSS del canal
+          RSS=$(curl -s "https://www.youtube.com/feeds/videos.xml?channel_id=$CHANNEL_ID")
+
+          # Extraer ID del último video y metadatos
+          LATEST_ID=$(echo "$RSS" | grep -o '<yt:videoId>[^<]*</yt:videoId>' | head -1 | sed 's/<[^>]*>//g')
+          TITLE=$(echo "$RSS" | grep -o '<title>[^<]*</title>' | sed -n '2p' | sed 's/<[^>]*>//g')
+          PUBLISHED=$(echo "$RSS" | grep -o '<published>[^<]*</published>' | head -1 | sed 's/<[^>]*>//g')
+          THUMB="https://img.youtube.com/vi/$LATEST_ID/maxresdefault.jpg"
+          URL="https://www.youtube.com/watch?v=$LATEST_ID"
+
+          # Leer el último ID guardado en el archivo
+          LAST_ID=""
+          if [ -f last_video_id.txt ]; then
+            LAST_ID=$(cat last_video_id.txt)
+          fi
+
+          echo "ID del último video en YouTube: $LATEST_ID"
+          echo "ID guardado anteriormente:      $LAST_ID"
+
+          if [ "$LATEST_ID" = "$LAST_ID" ]; then
+            echo "No hay videos nuevos. Finalizando..."
+            exit 0
+          fi
+
+          echo "¡Nuevo video detectado! Enviando a Discord..."
+
+          # Enviar mensaje estructurado (embed) a Discord
+          curl -s -X POST "$DISCORD_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": $(echo "$TITLE" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))'),
+                \"url\": \"$URL\",
+                \"color\": 16711680,
+                \"image\": { \"url\": \"$THUMB\" },
+                \"footer\": { \"text\": \"¡Acaba de salir un nuevo video! 🎬\" },
+                \"timestamp\": \"$PUBLISHED\"
+              }]
+            }"
+
+          # Guardar el ID del nuevo video y hacer commit
+          echo "$LATEST_ID" > last_video_id.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_video_id.txt
+          git commit -m "chore: actualizar último video ID a $LATEST_ID"
+          git push
+
+          echo "¡Proceso completado con éxito!"
